@@ -18,6 +18,11 @@ SPDX-FileCopyrightText: 2026 EON contributors
 - **One window:** a second start, or an `eon-office://org.eon.office.tasks/<id>` link, goes
   to the running window. Replaces the `open`, `focus` and `task.create` methods and the
   `task.completed` event; completing a task adds it to the recent list instead.
+- **Export and import iCalendar work from the window.** 0.1.0's buttons invoked
+  `exportIcs`/`importIcs`, names the host never registered (Tauri matches the Rust
+  function name, `export_ics`), so both failed when pressed. The self-test now fails the
+  build when the interface invokes a command the host does not register, and the window
+  check exports and re-imports through the forms.
 - Tests no longer need a running core; the window check starts Tasks on its own, hands it
   a link from a second start, and watches a due reminder fire.
 

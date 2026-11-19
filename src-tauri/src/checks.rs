@@ -145,6 +145,26 @@ pub fn ui_problems(html: &str, script: &str) -> Vec<String> {
     problems
 }
 
+/// Every `invoke("name"` in the script names a command the host registers.
+/// Tauri matches the Rust function's name exactly -- only arguments are
+/// camel-cased -- so `invoke("exportIcs")` for `fn export_ics` fails at the
+/// moment a person presses the button, and at no other.
+#[must_use]
+pub fn unknown_commands(script: &str, known: &[&str]) -> Vec<String> {
+    let mut problems = Vec::new();
+    for call in script.split("invoke(\"").skip(1) {
+        let name = call.split('"').next().unwrap_or_default();
+        if !known.contains(&name) {
+            problems.push(format!(
+                "the interface invokes `{name}`, which the host does not register"
+            ));
+        }
+    }
+    problems.sort();
+    problems.dedup();
+    problems
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -180,6 +200,15 @@ mod tests {
         let html = r#"<html><button></button><input id="q"><script>alert(1)</script></html>"#;
         let problems = ui_problems(html, "fetch('x')");
         assert_eq!(problems.len(), 5, "{problems:?}");
+    }
+
+    #[test]
+    fn a_misspelt_command_is_caught() {
+        let script = r#"invoke("export_ics", {}); invoke("importIcs", {}); invoke("importIcs")"#;
+        assert_eq!(
+            unknown_commands(script, &["export_ics", "import_ics"]),
+            vec!["the interface invokes `importIcs`, which the host does not register".to_owned()]
+        );
     }
 
     #[test]

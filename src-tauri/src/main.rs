@@ -31,6 +31,24 @@ use tauri::{Emitter, Manager};
 const INDEX: &str = include_str!("../../src/index.html");
 const SCRIPT: &str = include_str!("../../src/app.js");
 
+/// The commands below, by name, for the self-test: the interface may invoke
+/// only these. Keep in step with `generate_handler!` in `window`.
+const COMMANDS: &[&str] = &[
+    "strings",
+    "status",
+    "initial",
+    "prefs",
+    "view",
+    "get",
+    "create",
+    "update",
+    "complete",
+    "reopen",
+    "delete",
+    "export_ics",
+    "import_ics",
+];
+
 #[derive(Default)]
 struct Shared {
     tasks: Mutex<Option<Arc<Tasks>>>,
@@ -284,6 +302,7 @@ fn selftest() -> String {
         checks::catalogue_problems(eon_tasks::EN, eon_tasks::TR),
     );
     section("interface", checks::ui_problems(INDEX, SCRIPT));
+    section("commands", checks::unknown_commands(SCRIPT, COMMANDS));
     let manifest: Value = serde_json::from_str(eon_tasks::MANIFEST).unwrap_or(Value::Null);
     let mut problems = Vec::new();
     if manifest["id"] != eon_tasks::APP_ID || manifest["version"] != env!("CARGO_PKG_VERSION") {

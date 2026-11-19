@@ -306,7 +306,7 @@ $("sub-form").addEventListener("submit", async (event) => {
 $("export-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    const r = await invoke("exportIcs", { path: $("export-path").value, list: view.startsWith("list:") ? view.slice(5) : null });
+    const r = await invoke("export_ics", { path: $("export-path").value, list: view.startsWith("list:") ? view.slice(5) : null });
     announce(t("exported", { count: r.count, path: r.path }));
     $("status").textContent = t("exported", { count: r.count, path: r.path });
   } catch (e) {
@@ -316,10 +316,10 @@ $("export-form").addEventListener("submit", async (event) => {
 $("import-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    const r = await invoke("importIcs", { path: $("import-path").value });
+    const r = await invoke("import_ics", { path: $("import-path").value });
+    await refresh();
     announce(t("import.done", { count: r.imported }));
     $("status").textContent = t("import.done", { count: r.imported });
-    await refresh();
   } catch (e) {
     announce(t("error", { reason: reason(e) }));
   }

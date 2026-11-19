@@ -135,9 +135,20 @@ try {
   check("a link opens the task in the running window", await until(`!document.getElementById('detail').hidden && document.getElementById('d-title').value === 'Water the plants'`, 15000));
   check("the second start exits instead of opening a second window", exited);
 
-  // A reminder that is already due is shown once, without the window doing anything.
-  const due = await js(`(async () => (await window.__TAURI__.core.invoke('create', { fields: { title: 'Ring the bank', remind_at: Date.now() - 1000 } })).id)()`);
-  check("a due reminder is shown and marked once, by the window's own timer", await until(`(async () => (await window.__TAURI__.core.invoke('get', { id: ${JSON.stringify(due)} })).reminded > 0)()`, 30000));
+  // A reminder that is already due is shown by the window's own timer, which
+  // tells the window it fired -- and firing it is not an edit: the task keeps
+  // its version, so a detail panel open on it still saves.
+  await js(`(window.__fired = false, window.__TAURI__.event.listen('changed', () => { window.__fired = true; }))`);
+  const due = await js(`(async () => window.__TAURI__.core.invoke('create', { fields: { title: 'Ring the bank', remind_at: Date.now() - 1000 } }))()`);
+  check("a due reminder is shown by the window's own timer", await until(`window.__fired === true`, 30000));
+  check("showing it leaves the task's version alone", await js(`(async () => (await window.__TAURI__.core.invoke('get', { id: ${JSON.stringify(due.id)} })).rev === ${due.rev})()`));
+
+  // iCalendar out and back in, through the forms a person uses.
+  const ics = join(home, "out.ics");
+  await js(`(() => { document.querySelector('details').open = true; document.getElementById('export-path').value = ${JSON.stringify(ics)}; document.getElementById('export-form').requestSubmit(); })()`);
+  check("Export iCalendar writes the file", await until(`document.getElementById('announcer').textContent.startsWith('Saved ')`));
+  await js(`(() => { document.getElementById('import-path').value = ${JSON.stringify(ics)}; document.getElementById('import-form').requestSubmit(); })()`);
+  check("importing it back says how many", await until(`/^Imported [1-9]/.test(document.getElementById('announcer').textContent)`));
 
   await js(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
   await js(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', ctrlKey: true, bubbles: true, cancelable: true }))`);
