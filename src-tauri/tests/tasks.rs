@@ -4,8 +4,9 @@
 // Additional permission under GNU GPL version 3 section 7:
 // see LICENSE-EXCEPTION.md (EON Module ABI Exception 1.0).
 
-//! EON Tasks against a real core: the roadmap's acceptance criteria that a
-//! machine can check. Needs `EON_OFFICE_CORE_BIN`.
+//! EON Tasks on the EON Office library, in a home folder of its own: the
+//! roadmap's acceptance criteria that a machine can check. Nothing else has
+//! to be installed or running.
 
 #![allow(
     clippy::too_many_lines,
@@ -17,65 +18,37 @@
     clippy::format_push_string
 )]
 
-use eon_office_sdk::{Client, Incoming};
+use eon_office_core::Home;
 use eon_tasks::tasks::Tasks;
 use serde_json::{json, Value};
 use std::path::PathBuf;
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
 
-struct Core {
-    child: Child,
-    home: PathBuf,
-}
+struct TempHome(PathBuf);
 
-impl Drop for Core {
+impl Drop for TempHome {
     fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        let _ = std::fs::remove_dir_all(&self.home);
+        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
-fn start(name: &str) -> (Core, Client, Tasks) {
-    let binary = std::env::var_os("EON_OFFICE_CORE_BIN").expect("set EON_OFFICE_CORE_BIN");
-    let home = std::env::temp_dir().join(format!("eon-tasks-{name}-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&home);
-    std::fs::create_dir_all(&home).unwrap();
-    let child = Command::new(binary)
-        .args(["serve", "--home"])
-        .arg(&home)
-        .stdout(Stdio::null())
-        .spawn()
-        .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(20);
-    while eon_office_sdk::endpoint(&home).is_err() {
-        assert!(Instant::now() < deadline);
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    let owner = Client::connect_owner(&home).unwrap();
-    let manifest: Value = serde_json::from_str(eon_tasks::MANIFEST).unwrap();
-    owner
-        .call(
-            "apps.install",
-            json!({ "manifest": manifest, "grant": manifest["capabilities"] }),
-        )
-        .unwrap();
-    let token =
-        std::fs::read_to_string(home.join("apps").join(eon_tasks::APP_ID).join("token")).unwrap();
-    let client = Client::connect(
-        &eon_office_sdk::endpoint(&home).unwrap(),
-        Some(eon_tasks::APP_ID),
-        token.trim(),
-    )
-    .unwrap();
-    (Core { child, home }, owner, Tasks::new(client))
+fn start(name: &str) -> (TempHome, Home, Tasks) {
+    let dir = std::env::temp_dir().join(format!("eon-tasks-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let home = Home::open(&dir).unwrap();
+    let tasks = Tasks::open(&home, None).unwrap();
+    (TempHome(dir), home, tasks)
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }
 
 #[test]
-#[ignore = "needs EON_OFFICE_CORE_BIN"]
 fn tasks_views_repeats_board_and_conflicts() {
-    let (_core, _owner, tasks) = start("basic");
+    let (_dir, _home, tasks) = start("basic");
     let today = "2026-11-19";
     let a = tasks.create(&json!({ "title": "Pay rent", "due": "2026-11-19", "list": "Home", "rrule": "FREQ=MONTHLY" })).unwrap();
     let b = tasks
@@ -191,41 +164,71 @@ fn tasks_views_repeats_board_and_conflicts() {
 }
 
 #[test]
-#[ignore = "needs EON_OFFICE_CORE_BIN"]
-fn a_reminder_becomes_a_notification_and_ics_round_trips() {
-    let (_core, owner, tasks) = start("remind");
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
-    let t = tasks
-        .create(&json!({ "title": "Call Ayşe", "due": "2026-11-19", "remind_at": now + 400 }))
+fn reminders_fall_due_once_and_missed_ones_fire_once_at_start() {
+    let (dir, home, tasks) = start("remind");
+    let now = now_ms();
+    let due = tasks
+        .create(&json!({ "title": "Call Ayşe", "due": "2026-11-19", "remind_at": now - 60_000 }))
         .unwrap();
-    // The core's scheduler wakes Tasks; Tasks posts the notification.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    let mut reminded = false;
-    while Instant::now() < deadline && !reminded {
-        if let Some(Incoming::JobDue { name, payload, .. }) =
-            tasks.client.next(Some(Duration::from_millis(200)))
-        {
-            assert_eq!(name, format!("remind-{}", t["id"].as_str().unwrap()));
-            tasks.remind(&payload);
-            reminded = true;
-        }
-    }
-    assert!(reminded, "no job.due for the reminder");
-    let listed = owner.call("notifications.list", json!({})).unwrap();
-    assert_eq!(listed["items"][0]["title"], "Call Ayşe");
+    tasks
+        .create(&json!({ "title": "Later", "remind_at": now + 3_600_000 }))
+        .unwrap();
+    let finished = tasks
+        .create(&json!({ "title": "Already done", "remind_at": now - 60_000 }))
+        .unwrap();
+    let rev = tasks.get(finished["id"].as_str().unwrap()).unwrap()["rev"]
+        .as_u64()
+        .unwrap();
+    tasks
+        .complete(finished["id"].as_str().unwrap(), rev, "2026-11-19")
+        .unwrap();
 
+    // The window's timer asks what fell due: one notification, the open task's.
+    let fired = tasks.due_reminders(now);
+    assert_eq!(fired.len(), 1, "{fired:?}");
+    assert_eq!(
+        (fired[0]["id"].clone(), fired[0]["title"].clone()),
+        (due["id"].clone(), json!("Call Ayşe"))
+    );
+    assert_eq!(fired[0]["body"], "Due 2026-11-19");
+    // Asked again, nothing: a reminder fires once.
+    assert!(tasks.due_reminders(now + 1000).is_empty());
+    // Closed and started again (a missed reminder is caught up at start): still once.
+    drop(tasks);
+    let again = Tasks::open(&home, None).unwrap();
+    assert!(again.due_reminders(now + 2000).is_empty());
+    // Moving the reminder makes it fire again, at its new time.
+    let t = again.get(due["id"].as_str().unwrap()).unwrap();
+    again
+        .update(
+            due["id"].as_str().unwrap(),
+            &json!({ "remind_at": now + 10_000 }),
+            t["rev"].as_u64().unwrap(),
+        )
+        .unwrap();
+    assert!(again.due_reminders(now + 5_000).is_empty());
+    assert_eq!(again.due_reminders(now + 10_000).len(), 1);
+    // Revoking notifications stops them.
+    home.shared()
+        .unwrap()
+        .revoke(eon_tasks::APP_ID, "notifications")
+        .unwrap();
+    assert!(!again.may_notify());
+    drop(dir);
+}
+
+#[test]
+fn ics_round_trips() {
+    let (_dir, _home, tasks) = start("ics");
     // iCalendar out and back in: the same tasks, subtasks attached.
     let parent = tasks.create(&json!({ "title": "Trip; plan, book", "due": "2026-12-01", "rrule": "FREQ=WEEKLY;BYDAY=MO", "notes": "two\nlines" })).unwrap();
     tasks
         .create(&json!({ "title": "Passport", "parent": parent["id"] }))
         .unwrap();
     let ics = tasks.export_ics(None).unwrap();
-    assert_eq!(ics["count"], 3);
+    assert_eq!(ics["count"], 2);
     let report = tasks.import_ics(ics["ics"].as_str().unwrap()).unwrap();
-    assert_eq!(report["imported"], 3);
+    assert_eq!(report["imported"], 2);
     let all = tasks.view("all", "2026-11-19").unwrap();
     let copies: Vec<&Value> = all["tasks"]
         .as_array()
@@ -251,31 +254,18 @@ fn a_reminder_becomes_a_notification_and_ics_round_trips() {
 }
 
 #[test]
-#[ignore = "needs EON_OFFICE_CORE_BIN"]
-fn another_application_creates_a_task_through_the_core() {
-    let (_core, owner, tasks) = start("call");
-    let answering = std::thread::spawn(move || {
-        while let Some(message) = tasks.client.next(Some(Duration::from_secs(10))) {
-            if let Incoming::Invoke {
-                id, method, params, ..
-            } = message
-            {
-                return (tasks.answer(&id, &method, &params), tasks);
-            }
-        }
-        panic!("no invoke");
-    });
-    let created = owner
-        .call_app(
-            eon_tasks::APP_ID,
-            "task.create",
-            json!({ "title": "From Notes", "due": "2026-11-20" }),
-        )
-        .unwrap();
-    let (show, tasks) = answering.join().unwrap();
-    assert_eq!(show.unwrap()["open"], created["id"]);
+fn a_link_argument_opens_the_task() {
+    let (_dir, _home, tasks) = start("link");
+    let t = tasks.create(&json!({ "title": "Linked" })).unwrap();
+    let id = t["id"].as_str().unwrap();
     assert_eq!(
-        tasks.get(created["id"].as_str().unwrap()).unwrap()["due"],
-        "2026-11-20"
+        tasks.link(&format!("eon-office://org.eon.office.tasks/{id}")),
+        Some(json!({ "open": id }))
     );
+    assert_eq!(
+        tasks.link("eon-office://org.eon.office.tasks"),
+        Some(json!({ "focus": true }))
+    );
+    assert_eq!(tasks.link("eon-office://org.eon.office.notes/x"), None);
+    assert_eq!(tasks.link("eon-office://org.eon.office.tasks/nope"), None);
 }

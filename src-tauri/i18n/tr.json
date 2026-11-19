@@ -55,8 +55,7 @@
   "export.label": "Kaydedilecek yer",
   "export.placeholder": ".ics dosyası için yol",
   "conflict": "Bu görev, siz açtıktan sonra başka bir yerde değişti. Görmek için yeniden yükleyin.",
-  "not.installed": "EON Tasks henüz EON Office'e kurulu değil. EON Launcher'ı açın, bu programın yanındaki manifest.json dosyasından kurun ve izinlerini verin.",
-  "no.core": "EON Office çalışmıyor. Önce EON Launcher'ı başlatın.",
   "retry": "Yeniden dene",
-  "error": "Bir şeyler ters gitti: {reason}"
+  "error": "Bir şeyler ters gitti: {reason}",
+  "open.failed": "EON Tasks görevlerinizi açamadı: {reason}"
 }

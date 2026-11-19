@@ -15,10 +15,13 @@
 //! of closing it.
 
 use crate::recur::{Date, Rule};
-use eon_office_sdk::{Client, Error};
-use serde_json::{json, Map, Value};
+use eon_office_core::manifest::{Capability, Manifest};
+use eon_office_core::{links as eon_links, AppContext, Home};
+use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 
 pub const COLLECTION: &str = "tasks";
 pub type Outcome = Result<Value, Value>;
@@ -27,13 +30,11 @@ fn fail(code: &str, message: impl Into<String>) -> Value {
     json!({ "code": code, "message": message.into() })
 }
 
-fn sdk<T>(result: Result<T, Error>) -> Result<T, Value> {
+/// A library error as the interface sees it: `{ code, message, data }`.
+pub fn core<T>(result: eon_office_core::Result<T>) -> Result<T, Value> {
     result.map_err(|e| {
-        let mut out = fail(e.code(), e.to_string());
-        if let Error::Protocol { data, .. } = &e {
-            out["data"] = data.clone();
-        }
-        out
+        let error = e.to_json();
+        json!({ "code": error["data"]["code"], "message": error["message"], "data": error["data"] })
     })
 }
 
@@ -84,23 +85,45 @@ fn check_fields(task: &Value) -> Result<(), Value> {
 }
 
 pub struct Tasks {
-    pub client: Client,
+    ctx: Mutex<AppContext>,
 }
 
 impl Tasks {
-    pub fn new(client: Client) -> Tasks {
-        Tasks { client }
+    /// Open Tasks' store in `home`, registering Tasks with `folder` as where
+    /// its program lives (`None`: leave the registration's folder as it is).
+    pub fn open(home: &Home, folder: Option<&Path>) -> Result<Tasks, Value> {
+        let manifest: Value = serde_json::from_str(crate::MANIFEST)
+            .map_err(|e| fail("internal", format!("manifest.json: {e}")))?;
+        let manifest = core(Manifest::from_json(manifest))?;
+        Ok(Tasks {
+            ctx: Mutex::new(core(home.app(&manifest, folder))?),
+        })
+    }
+
+    fn ctx(&self) -> MutexGuard<'_, AppContext> {
+        self.ctx.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The person's preferences: language, theme, text size, motion, contrast.
+    pub fn prefs(&self) -> Outcome {
+        core(self.ctx().prefs())
+    }
+
+    /// Changes whenever a preference changes; the window polls it.
+    pub fn prefs_version(&self) -> i64 {
+        self.ctx().prefs_version().unwrap_or(0)
+    }
+
+    /// Declared and not revoked: reminders may become notifications.
+    pub fn may_notify(&self) -> bool {
+        self.ctx().allows(&Capability::Notifications)
     }
 
     fn all(&self) -> Result<Vec<Value>, Value> {
         let mut out = Vec::new();
         let mut after: Option<String> = None;
         loop {
-            let mut params = json!({ "collection": COLLECTION, "limit": 1000 });
-            if let Some(a) = &after {
-                params["after"] = json!(a);
-            }
-            let page = sdk(self.client.call("storage.list", params))?;
+            let page = core(self.ctx().list(COLLECTION, after.as_deref(), 1000))?;
             let items = page["items"].as_array().cloned().unwrap_or_default();
             for item in &items {
                 let mut task = item["doc"].clone();
@@ -182,43 +205,58 @@ impl Tasks {
 
     fn write(&self, id: &str, task: &Value, rev: Option<u64>) -> Outcome {
         check_fields(task)?;
-        let written = sdk(self.client.put(COLLECTION, id, task, rev))?;
+        let written = core(self.ctx().put(COLLECTION, id, task, rev))?;
         let text = format!(
             "{} {}",
             task["notes"].as_str().unwrap_or_default(),
             task["list"].as_str().unwrap_or_default()
         );
         let _ = self
-            .client
+            .ctx()
             .index(id, task["title"].as_str().unwrap_or_default(), &text, false);
-        self.reminder(id, task);
         Ok(json!({ "id": id, "rev": written["rev"] }))
     }
 
-    /// Keep the core's job for this task's reminder in step with the task.
-    fn reminder(&self, id: &str, task: &Value) {
-        let name = format!("remind-{id}");
-        match task["remind_at"]
-            .as_u64()
-            .filter(|_| task["status"] != "done")
-        {
-            Some(at) if at > now_ms() => {
-                let _ = self.client.call(
-                    "schedule.add",
-                    json!({ "name": name, "at": at, "payload": { "task": id } }),
-                );
+    /// Reminders that fell due by `now` and have not been shown: each is
+    /// marked shown before it is returned, so it fires once -- also when Tasks
+    /// was closed at the time and catches up at its next start. A reminder
+    /// moved to a new time fires again at that time.
+    pub fn due_reminders(&self, now: u64) -> Vec<Value> {
+        let Ok(all) = self.all() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for task in all {
+            let Some(at) = task["remind_at"].as_u64() else {
+                continue;
+            };
+            if at > now || task["status"] == "done" || task["reminded"].as_u64() == Some(at) {
+                continue;
             }
-            _ => {
-                let _ = self.client.call("schedule.cancel", json!({ "name": name }));
+            let id = task["id"].as_str().unwrap_or_default().to_owned();
+            let rev = task["rev"].as_u64().unwrap_or(0);
+            let mut marked = task.clone();
+            marked["reminded"] = json!(at);
+            if let Some(o) = marked.as_object_mut() {
+                o.remove("id");
+                o.remove("rev");
             }
+            // Edited in the window at this very moment: the next tick tries again.
+            if core(self.ctx().put(COLLECTION, &id, &marked, Some(rev))).is_err() {
+                continue;
+            }
+            let body = task["due"]
+                .as_str()
+                .filter(|d| !d.is_empty())
+                .map(|d| format!("Due {d}"))
+                .unwrap_or_default();
+            out.push(json!({ "id": id, "title": task["title"], "body": body }));
         }
+        out
     }
 
     fn activity(&self, id: &str, title: &str, kind: &str) {
-        let _ = self.client.publish(
-            "activity",
-            &json!({ "id": id, "title": title, "kind": kind }),
-        );
+        let _ = self.ctx().activity(id, title, kind);
     }
 
     pub fn create(&self, fields: &Value) -> Outcome {
@@ -241,8 +279,10 @@ impl Tasks {
     }
 
     pub fn get(&self, id: &str) -> Outcome {
-        let found = sdk(self.client.get(COLLECTION, id))?
-            .ok_or_else(|| fail("not_found", "no such task"))?;
+        let found = core(self.ctx().get(COLLECTION, id))?;
+        if found.is_null() {
+            return Err(fail("not_found", "no such task"));
+        }
         let mut task = found["doc"].clone();
         task["id"] = json!(id);
         task["rev"] = found["rev"].clone();
@@ -319,7 +359,7 @@ impl Tasks {
             o.remove("rev");
         }
         let out = self.write(id, &task, Some(rev))?;
-        let _ = self.client.publish("task.completed", &json!({ "id": id }));
+        self.activity(id, task["title"].as_str().unwrap_or_default(), "completed");
         Ok(json!({ "id": id, "rev": out["rev"], "next": repeated }))
     }
 
@@ -333,39 +373,12 @@ impl Tasks {
         for task in self.all()? {
             let tid = task["id"].as_str().unwrap_or_default().to_owned();
             if tid == id || task["parent"] == id {
-                let _ = self.client.call(
-                    "storage.delete",
-                    json!({ "collection": COLLECTION, "id": tid }),
-                );
-                let _ = self.client.call("search.remove", json!({ "id": tid }));
-                let _ = self.client.call(
-                    "schedule.cancel",
-                    json!({ "name": format!("remind-{tid}") }),
-                );
+                let _ = self.ctx().delete(COLLECTION, &tid, None);
+                let _ = self.ctx().unindex(&tid);
                 removed.push(tid);
             }
         }
         Ok(json!({ "deleted": removed }))
-    }
-
-    /// A reminder fell due: tell the person, through the shared notification list.
-    pub fn remind(&self, payload: &Value) {
-        let Some(id) = payload["task"].as_str() else {
-            return;
-        };
-        if let Ok(task) = self.get(id) {
-            if task["status"] != "done" {
-                let body = task["due"]
-                    .as_str()
-                    .filter(|d| !d.is_empty())
-                    .map(|d| format!("Due {d}"))
-                    .unwrap_or_default();
-                let _ = self.client.call(
-                    "notifications.post",
-                    json!({ "title": task["title"], "body": body, "urgency": "normal" }),
-                );
-            }
-        }
     }
 
     pub fn export_ics(&self, list: Option<&str>) -> Outcome {
@@ -429,44 +442,19 @@ impl Tasks {
         Ok(json!({ "imported": ids.len(), "skipped": skipped }))
     }
 
-    /// Answer other applications: `open`, `focus`, `task.create`.
-    pub fn answer(&self, id: &Value, method: &str, params: &Value) -> Option<Value> {
-        let (answer, show) = match method {
-            "open" => {
-                let task = params["id"].as_str().unwrap_or_default();
-                match self.get(task) {
-                    Ok(_) => (Ok(json!({ "opened": task })), Some(json!({ "open": task }))),
-                    Err(e) => (Err(e), None),
-                }
-            }
-            "focus" => (
-                Ok(json!({ "focused": true })),
-                Some(json!({ "focus": true })),
-            ),
-            "task.create" => {
-                let mut fields = Map::new();
-                for key in ["title", "notes", "list", "due"] {
-                    if let Some(v) = params.get(key) {
-                        fields.insert(key.into(), v.clone());
-                    }
-                }
-                match self.create(&Value::Object(fields)) {
-                    Ok(created) => {
-                        let task = created["id"].clone();
-                        (Ok(created), Some(json!({ "open": task })))
-                    }
-                    Err(e) => (Err(e), None),
-                }
-            }
-            _ => (Err(fail("unknown_method", "not provided")), None),
-        };
-        let reply = answer.map_err(|e| {
-            eon_office_sdk::AppError::new(
-                e["code"].as_str().unwrap_or("error"),
-                e["message"].as_str().unwrap_or_default(),
-            )
-        });
-        let _ = self.client.answer(id, reply);
-        show
+    /// What the window should do for an `eon-office://` link it was started
+    /// with or handed: open a task by id, or come forward. Anything else is
+    /// nothing.
+    pub fn link(&self, text: &str) -> Option<Value> {
+        let link = eon_links::parse(text)?;
+        if link.app != crate::APP_ID {
+            return None;
+        }
+        if link.item.is_empty() {
+            return Some(json!({ "focus": true }));
+        }
+        self.get(&link.item)
+            .ok()
+            .map(|_| json!({ "open": link.item }))
     }
 }

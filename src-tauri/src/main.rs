@@ -8,13 +8,18 @@
 //!
 //! ```text
 //! eon-tasks                    open the window
+//! eon-tasks eon-office://...   open the window on an item (a running window takes it)
 //! eon-tasks --selftest [FILE]  strings and interface checks
 //! eon-tasks --version
 //! ```
+//!
+//! EON Tasks stands alone: it opens its own store in the EON Office home
+//! folder through the `eon-office-core` library. Nothing else has to be
+//! installed or running.
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use eon_office_sdk::{Client, Incoming};
+use eon_office_core::Home;
 use eon_tasks::checks;
 use eon_tasks::tasks::{Outcome, Tasks};
 use serde_json::{json, Value};
@@ -29,6 +34,8 @@ const SCRIPT: &str = include_str!("../../src/app.js");
 #[derive(Default)]
 struct Shared {
     tasks: Mutex<Option<Arc<Tasks>>>,
+    /// The link EON Tasks was started with, until the window has shown it.
+    pending: Mutex<Option<String>>,
 }
 
 impl Shared {
@@ -37,64 +44,91 @@ impl Shared {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
-            .ok_or_else(|| json!({ "code": "not_connected", "message": "not connected" }))
+            .ok_or_else(|| json!({ "code": "not_open", "message": "not open yet" }))
     }
 }
 
 type State<'a> = tauri::State<'a, Shared>;
 
-/// Connect to the core as EON Tasks and start answering other applications.
-fn connect(app: &tauri::AppHandle, shared: &Shared) -> Outcome {
-    if let Ok(tasks) = shared.tasks() {
-        return Ok(json!({ "granted": tasks.client.granted() }));
+/// Open the store in the EON Office home folder and register EON Tasks there.
+fn open(app: &tauri::AppHandle, shared: &Shared) -> Outcome {
+    if shared.tasks().is_ok() {
+        return Ok(json!({ "open": true }));
     }
-    let client = Client::connect_app(eon_tasks::APP_ID).map_err(|e| {
-        let code = if e.code() == "unauthenticated" {
-            "not_installed"
-        } else if e.code() == "connection" {
-            "no_core"
-        } else {
-            e.code()
-        };
-        json!({ "code": code, "message": e.to_string() })
-    })?;
-    let granted = client.granted();
-    let tasks = Arc::new(Tasks::new(client));
+    let root = Home::default_location()
+        .ok_or_else(|| json!({ "code": "no_home", "message": "no per-user data folder" }))?;
+    let home = eon_tasks::tasks::core(Home::open(&root))?;
+    let folder = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
+    let tasks = Arc::new(Tasks::open(&home, folder.as_deref())?);
     *shared.tasks.lock().unwrap_or_else(PoisonError::into_inner) = Some(Arc::clone(&tasks));
+
+    // Reminders: checked every 20 seconds while the window is open, and at
+    // once on start, so one that fell due while EON Tasks was closed shows now.
+    let reminders = Arc::clone(&tasks);
+    let handle = app.clone();
+    std::thread::spawn(move || loop {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(0));
+        let due = reminders.due_reminders(now);
+        if !due.is_empty() {
+            if reminders.may_notify() {
+                use tauri_plugin_notification::NotificationExt;
+                for item in &due {
+                    let _ = handle
+                        .notification()
+                        .builder()
+                        .title(item["title"].as_str().unwrap_or_default())
+                        .body(item["body"].as_str().unwrap_or_default())
+                        .show();
+                }
+            }
+            let _ = handle.emit("changed", ());
+        }
+        std::thread::sleep(Duration::from_secs(20));
+    });
+
+    // Preferences are shared with every EON Office application; notice a
+    // change made elsewhere (the launcher) within two seconds.
     let handle = app.clone();
     std::thread::spawn(move || {
-        while let Some(message) = tasks.client.next(None) {
-            match message {
-                Incoming::Invoke {
-                    id, method, params, ..
-                } => {
-                    if let Some(show) = tasks.answer(&id, &method, &params) {
-                        if let Some(window) = handle.get_webview_window("main") {
-                            let _ = window.unminimize();
-                            let _ = window.set_focus();
-                        }
-                        let _ = handle.emit("show", show);
-                    }
-                }
-                Incoming::JobDue { name, payload, .. } if name.starts_with("remind-") => {
-                    tasks.remind(&payload);
-                    let _ = handle.emit("changed", ());
-                }
-                Incoming::Event { topic, .. } if topic == "core/prefs.changed" => {
-                    let _ = handle.emit("prefs-changed", ());
-                }
-                Incoming::Shutdown => {
-                    // The core asks Tasks to leave: the interface saves first.
-                    let _ = handle.emit("save-and-quit", ());
-                    std::thread::sleep(Duration::from_millis(1500));
-                    handle.exit(0);
-                    break;
-                }
-                _ => {}
+        let mut seen = tasks.prefs_version();
+        loop {
+            std::thread::sleep(Duration::from_secs(2));
+            let now = tasks.prefs_version();
+            if now != seen {
+                seen = now;
+                let _ = handle.emit("prefs-changed", ());
             }
         }
     });
-    Ok(json!({ "granted": granted }))
+    Ok(json!({ "open": true }))
+}
+
+/// Show what a link asks for, bringing the window forward.
+fn deliver(app: &tauri::AppHandle, link: &str) {
+    let state = app.state::<Shared>();
+    let Ok(tasks) = state.tasks() else {
+        // Not open yet: the window asks for it once it is.
+        *state.pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(link.to_owned());
+        return;
+    };
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+    if let Some(show) = tasks.link(link) {
+        let _ = app.emit("show", show);
+    }
+}
+
+fn link_argument(args: &[String]) -> Option<String> {
+    args.iter()
+        .skip(1)
+        .find(|a| a.starts_with(eon_office_core::links::SCHEME))
+        .cloned()
 }
 
 #[tauri::command(async)]
@@ -104,16 +138,24 @@ fn strings(language: String) -> Value {
 
 #[tauri::command(async)]
 fn status(app: tauri::AppHandle, state: State<'_>) -> Outcome {
-    connect(&app, &state)
+    open(&app, &state)
+}
+
+/// The link EON Tasks was started with, once: what the window shows first.
+#[tauri::command(async)]
+fn initial(state: State<'_>) -> Outcome {
+    let tasks = state.tasks()?;
+    let link = state
+        .pending
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .take();
+    Ok(link.and_then(|l| tasks.link(&l)).unwrap_or(Value::Null))
 }
 
 #[tauri::command(async)]
 fn prefs(state: State<'_>) -> Outcome {
-    state
-        .tasks()?
-        .client
-        .prefs()
-        .map_err(|e| json!({ "code": e.code(), "message": e.to_string() }))
+    state.tasks()?.prefs()
 }
 
 #[tauri::command(async)]
@@ -184,15 +226,34 @@ fn main_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     builder.build().map(|_| ())
 }
 
-fn window() {
+fn window(link: Option<String>) {
+    let shared = Shared::default();
+    *shared
+        .pending
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner) = link;
     let app = tauri::Builder::default()
-        .manage(Shared::default())
+        // First, so a second start hands over its link and exits before
+        // anything else happens.
+        .plugin(tauri_plugin_single_instance::init(
+            |app, args, _cwd| match link_argument(&args) {
+                Some(link) => deliver(app, &link),
+                None => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.unminimize();
+                        let _ = window.set_focus();
+                    }
+                }
+            },
+        ))
+        .plugin(tauri_plugin_notification::init())
+        .manage(shared)
         .setup(|app| {
             main_window(app.handle())?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
-            strings, status, prefs, view, get, create, update, complete, reopen, delete,
+            strings, status, initial, prefs, view, get, create, update, complete, reopen, delete,
             export_ics, import_ics,
         ])
         .build(tauri::generate_context!());
@@ -237,6 +298,25 @@ fn main() {
     let mut arguments = std::env::args().skip(1);
     match arguments.next().as_deref() {
         Some("--version" | "-V") => println!("EON Tasks {}", env!("CARGO_PKG_VERSION")),
+        // Debug builds only: change a shared preference, as the launcher would,
+        // so tools/ui-check.mjs can check that a running window follows it.
+        #[cfg(debug_assertions)]
+        Some("--set-pref") => {
+            let (key, value) = (
+                arguments.next().unwrap_or_default(),
+                arguments.next().unwrap_or_default(),
+            );
+            let value: Value = serde_json::from_str(&value).unwrap_or(Value::String(value));
+            let done = Home::default_location()
+                .ok_or_else(|| "no home folder".to_owned())
+                .and_then(|root| Home::open(&root).map_err(|e| e.to_string()))
+                .and_then(|home| home.shared().map_err(|e| e.to_string()))
+                .and_then(|shared| shared.set_pref(&key, &value).map_err(|e| e.to_string()));
+            if let Err(e) = done {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
         Some("--selftest") => {
             let report = selftest();
             match arguments.next() {
@@ -252,6 +332,6 @@ fn main() {
                 std::process::exit(1);
             }
         }
-        _ => window(),
+        _ => window(link_argument(&std::env::args().collect::<Vec<_>>())),
     }
 }

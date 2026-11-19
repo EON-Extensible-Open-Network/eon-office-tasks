@@ -26,8 +26,15 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 # The window (madde 2): the system webview, no plugins.
 tauri = { version = "2", features = [] }
-# The protocol client; the tasks live in the core, not in this program.
-eon-office-sdk = { git = "https://github.com/EON-Extensible-Open-Network/eon-office-sdk", rev = "b38bd6b8ef57583bfd4cc1ca8ee9acbd8d9d5c6c", version = "0.1.0" }
+# The EON Office library: the tasks' store, the shared search, the recent list
+# and links, in files on this machine. Pinned by commit, as eon-stream-app pins
+# eon-stream-core.
+eon-office-core = { git = "https://github.com/EON-Extensible-Open-Network/eon-office-core", rev = "4279f8a4e7d75cc1ee63f844862436ab121ab3b7", version = "0.2.0" }
+# One window per person: a second start hands its link to the first and exits.
+tauri-plugin-single-instance = "2"
+# Reminders appear where the person already looks: the operating system's
+# notification centre.
+tauri-plugin-notification = "2"
 serde_json = "1"
 
 [lints.rust]

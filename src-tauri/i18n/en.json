@@ -55,8 +55,7 @@
   "export.label": "Save to",
   "export.placeholder": "Path for the .ics file",
   "conflict": "This task changed elsewhere since you opened it. Reload to see it.",
-  "not.installed": "EON Tasks is not installed in EON Office yet. Open EON Launcher and install it from the manifest.json beside this program, then allow its permissions.",
-  "no.core": "EON Office is not running. Start EON Launcher first.",
   "retry": "Try again",
-  "error": "Something went wrong: {reason}"
+  "error": "Something went wrong: {reason}",
+  "open.failed": "EON Tasks could not open your tasks: {reason}"
 }

@@ -10,7 +10,8 @@ that repeat, reminders that arrive as notifications, Today and the next seven da
 iCalendar (`.ics`) import and export so your tasks move to and from Outlook, Thunderbird,
 Apple Reminders or Nextcloud. Part of [EON Office](https://github.com/EON-Extensible-Open-Network/eon-docs/blob/main/office/roadmap.md)'s Wave 1.
 
-> **0.1.0** — protocol `v0`, early. The window is checked end to end on Windows; Linux and
+> **0.2.0** — formats `v0`, early. **Stands alone:** download it, run it. Nothing else
+> has to be installed or running. The window is checked end to end on Windows; Linux and
 > macOS build and pass the same tests without a window.
 
 ## What it does
@@ -20,8 +21,8 @@ Apple Reminders or Nextcloud. Part of [EON Office](https://github.com/EON-Extens
 - **Repeating tasks** — every day, every weekday, every week, month or year (the RFC 5545
   RRULE subset; anything else in an imported file is dropped, not mangled). Ticking one off
   moves it to its next date and keeps it open; its reminder moves with it.
-- **Reminders** are handed to the EON Office core's scheduler and arrive in the shared
-  notification list — set one, close Tasks, and it is delivered when Tasks next runs.
+- **Reminders** appear in your operating system's notification centre. Each fires once;
+  one that fell due while Tasks was closed is shown when you next open it.
 - **Subtasks** travel with their task in every view; deleting a task deletes them too.
 - **Board** with *To do*, *Doing*, *Done*, and buttons to move a card — no dragging needed.
 - **iCalendar** export (folded lines, escaped text, `RELATED-TO` for subtasks) and import
@@ -29,22 +30,32 @@ Apple Reminders or Nextcloud. Part of [EON Office](https://github.com/EON-Extens
 - **Two windows never overwrite each other:** a change made on an out-of-date version is
   refused.
 - **Keyboard:** the cursor starts in the new-task field; Enter adds; Ctrl+N returns there;
-  arrows switch List/Board; Escape closes the details. Follows EON Launcher's language,
-  theme, text size, contrast and motion preferences, live.
+  arrows switch List/Board; Escape closes the details. Follows the language, theme, text
+  size, contrast and motion preferences shared by EON Office applications, live.
 
-**For other applications** (if you allow them `call:org.eon.office.tasks`): `task.create`,
-`open`, `focus`. Tasks announces `activity` (title only) and `task.completed`.
+- **One window.** Starting Tasks again, or following a link to a task, brings the open
+  window forward.
 
-**What it asks for:** `storage`, `search.index`, `search.query`, `notifications` (for
-reminders), `schedule` (to be woken for them), `events.publish`.
+**With other EON Office applications** (all optional): `eon-office://org.eon.office.tasks/<id>`
+opens a task from any application that links to it. Tasks adds what you create, edit and
+complete to the shared *Recent* list — titles only.
+
+**What it asks for:** keep its data on this device (`storage`), make its tasks searchable
+(`search.index`, private to Tasks), search (`search.query`), show reminders
+(`notifications`, `schedule`), add titles to your recent list (`events.publish`).
+
+## Install
+
+Download `eon-tasks` from a release and run it — see the release notes for checksums. Or,
+with EON Launcher: *Get applications* → *Include previews* → EON Tasks.
 
 ## Develop
 
 ```
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
-EON_OFFICE_CORE_BIN=/path/to/eon-office-core cargo test -- --include-ignored
-node tools/ui-check.mjs --tasks target/debug/eon-tasks.exe --core /path/to/eon-office-core.exe --shots shots
+cargo test
+node tools/ui-check.mjs --tasks target/debug/eon-tasks.exe --shots shots
 ```
 
 Licence `GPL-3.0-or-later` with the [EON Module ABI Exception](LICENSE-EXCEPTION.md).

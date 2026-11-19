@@ -10,7 +10,20 @@ yanked = "deny"
 # GTK 3 bindings Tauri uses on Linux only (cargo tree -i proc-macro-error
 # --target x86_64-unknown-linux-gnu). Windows and macOS builds do not contain it.
 # Remove this when Tauri's Linux stack leaves gtk-rs 0.18.
-ignore = ["RUSTSEC-2024-0370"]
+#
+# RUSTSEC-2026-0370, -0371, -0372 -- zvariant, zbus_names and zvariant_derive are
+# unmaintained *as separate crates*: they were merged into zbus 6 (its `wire` and
+# `names` modules). Not vulnerabilities. Reached only on Linux, through zbus 5,
+# which tauri-plugin-single-instance uses to find the running window over D-Bus
+# (and notify-rust, behind tauri-plugin-notification, to post notifications)
+# (cargo tree -i zvariant --target x86_64-unknown-linux-gnu). Windows and macOS
+# builds do not contain them. Remove these when the plugins move to zbus 6.
+ignore = [
+    "RUSTSEC-2024-0370",
+    "RUSTSEC-2026-0370",
+    "RUSTSEC-2026-0371",
+    "RUSTSEC-2026-0372",
+]
 
 [licenses]
 # Our own crates are copyleft and unpublished; the allow list below governs
@@ -47,4 +60,4 @@ unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
 # The SDK is pinned to a commit of our own repository (src-tauri/Cargo.toml).
-allow-git = ["https://github.com/EON-Extensible-Open-Network/eon-office-sdk"]
+allow-git = ["https://github.com/EON-Extensible-Open-Network/eon-office-core"]

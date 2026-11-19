@@ -2,15 +2,14 @@
 # SPDX-FileCopyrightText: 2026 EON contributors
 #
 # EON Tasks. `src/` is the interface (static HTML, CSS, JavaScript; no Node,
-# no bundler). `src-tauri/` is the host: a library (`tasks`, testable against
-# a real core) and the window over it.
+# no bundler). `src-tauri/` is the host: a library (`tasks`, on the EON Office
+# library) and the window over it.
 [workspace]
 members = ["src-tauri"]
-exclude = ["core"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.98"
 license = "GPL-3.0-or-later"

@@ -2,23 +2,21 @@
 // SPDX-FileCopyrightText: 2026 EON contributors
 //
 // Drives the real EON Tasks window through the WebView2 DevTools protocol.
-// The core is started in a private home, Tasks is installed and launched by
-// the core -- as a person's launcher would -- and the window is checked.
+// Tasks is started on its own in a private EON Office home -- nothing else is
+// installed or running, which is the point -- and the window is checked.
 // No dependencies (Node 22+), Windows, debug build of Tasks.
 //
-//   node tools/ui-check.mjs --tasks <eon-tasks.exe> --core <eon-office-core.exe> [--shots <dir>]
+//   node tools/ui-check.mjs --tasks <eon-tasks.exe> [--shots <dir>]
 
-import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
-import { createConnection } from "node:net";
+import { spawn, spawnSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
 const arg = (name) => { const at = process.argv.indexOf(name); return at > 0 ? process.argv[at + 1] : undefined; };
 const appExe = arg("--tasks") && resolve(arg("--tasks"));
-const coreExe = arg("--core") && resolve(arg("--core"));
 const shots = arg("--shots");
-if (!appExe || !coreExe) { console.error("usage: node tools/ui-check.mjs --tasks <exe> --core <exe> [--shots <dir>]"); process.exit(2); }
+if (!appExe) { console.error("usage: node tools/ui-check.mjs --tasks <exe> [--shots <dir>]"); process.exit(2); }
 if (shots) mkdirSync(shots, { recursive: true });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -30,27 +28,11 @@ const check = (name, ok, detail = "") => {
   if (!ok) failures++;
 };
 
-function owner() {
-  const endpoint = JSON.parse(readFileSync(join(home, "runtime", "endpoint.json"), "utf8"));
-  const [host, p] = endpoint.address.split(":");
-  const socket = createConnection({ host, port: Number(p) });
-  let buffer = ""; let next = 1; const waiting = new Map();
-  socket.setEncoding("utf8");
-  socket.on("data", (chunk) => {
-    buffer += chunk; let at;
-    while ((at = buffer.indexOf("\n")) >= 0) {
-      const m = JSON.parse(buffer.slice(0, at)); buffer = buffer.slice(at + 1);
-      if (!m.method && waiting.has(m.id)) { waiting.get(m.id)(m); waiting.delete(m.id); }
-    }
-  });
-  const call = (method, params = {}) => new Promise((ok, no) => {
-    const id = next++;
-    waiting.set(id, (m) => (m.error ? no(m.error) : ok(m.result)));
-    socket.write(JSON.stringify({ jsonrpc: "2.0", id, method, params }) + "\n");
-  });
-  const token = readFileSync(join(home, "runtime", "owner.token"), "utf8").trim();
-  const ready = new Promise((r) => socket.on("connect", r)).then(() => call("session.hello", { token }));
-  return { call, ready, close: () => socket.destroy() };
+const env = { ...process.env, EON_OFFICE_HOME: home, EON_WEBVIEW_ARGS: `--remote-debugging-port=${port}` };
+// A shared preference changed elsewhere -- as the launcher would.
+function setPref(key, value) {
+  const r = spawnSync(appExe, ["--set-pref", key, JSON.stringify(value)], { env, encoding: "utf8" });
+  if (r.status !== 0) throw new Error(`--set-pref ${key}: ${r.stderr}`);
 }
 
 let cdp;
@@ -100,27 +82,17 @@ async function shot(name) {
   writeFileSync(join(shots, `tasks-${name}.png`), Buffer.from(r.result.data, "base64"));
 }
 
-const core = spawn(coreExe, ["serve", "--home", home], {
-  env: { ...process.env, EON_WEBVIEW_ARGS: `--remote-debugging-port=${port}` },
-  stdio: "ignore",
-});
-let o;
+let app;
 try {
   console.log("EON Tasks interface check");
-  for (let i = 0; i < 100 && !existsSync(join(home, "runtime", "endpoint.json")); i++) await sleep(100);
-  o = owner();
-  await o.ready;
-  await o.call("prefs.set", { key: "locale", value: "en" });
-  const manifest = JSON.parse(readFileSync(new URL("../manifest.json", import.meta.url), "utf8"));
-  manifest.entry = { command: appExe };
-  await o.call("apps.install", { manifest, grant: manifest.capabilities });
-  await o.call("apps.launch", { app: manifest.id });
+  setPref("locale", "en");
+  app = spawn(appExe, [], { env, stdio: "ignore" });
   cdp = await devtools();
   await cdp.send("Emulation.setFocusEmulationEnabled", { enabled: true });
   const add = async (title, list = "") => js(`(() => { document.getElementById('add-title').value = ${JSON.stringify(title)}; document.getElementById('add-list').value = ${JSON.stringify(list)}; document.getElementById('add-form').requestSubmit(); })()`);
   const rowOf = (title) => `[...document.querySelectorAll('#task-list li')].find(li => li.querySelector('.title').textContent === ${JSON.stringify(title)})`;
 
-  check("the window connects and opens on Today", await until(`document.body.dataset.ready === '1' && document.getElementById('view-title').textContent === 'Today'`, 20000));
+  check("the window opens on its own, on Today", await until(`document.body.dataset.ready === '1' && document.getElementById('view-title').textContent === 'Today'`, 20000));
   check("the cursor starts in the new-task field", await js(`document.activeElement.id === 'add-title'`));
 
   await add("Buy bread", "Home");
@@ -155,14 +127,23 @@ try {
   await key("ArrowLeft");
   check("arrows switch between List and Board", await until(`document.activeElement.id === 'mode-list' && !document.getElementById('task-list').hidden`));
 
-  const created = await o.call("apps.call", { app: manifest.id, method: "task.create", params: { title: "From Notes", due: "2030-01-01" } });
-  check("task.create from another app opens the new task", !!created.id && (await until(`document.getElementById('d-title').value === 'From Notes'`)));
+  // Another application opens a task with a link: a second start hands it to
+  // this window and exits.
+  const plants = await js(`(async () => (await window.__TAURI__.core.invoke('view', { view: 'all', today: '2026-11-19' })).tasks.find(t => t.title === 'Water the plants').id)()`);
+  const second = spawn(appExe, [`eon-office://org.eon.office.tasks/${plants}`], { env, stdio: "ignore" });
+  const exited = await new Promise((done) => { const timer = setTimeout(() => done(false), 15000); second.on("exit", () => { clearTimeout(timer); done(true); }); });
+  check("a link opens the task in the running window", await until(`!document.getElementById('detail').hidden && document.getElementById('d-title').value === 'Water the plants'`, 15000));
+  check("the second start exits instead of opening a second window", exited);
+
+  // A reminder that is already due is shown once, without the window doing anything.
+  const due = await js(`(async () => (await window.__TAURI__.core.invoke('create', { fields: { title: 'Ring the bank', remind_at: Date.now() - 1000 } })).id)()`);
+  check("a due reminder is shown and marked once, by the window's own timer", await until(`(async () => (await window.__TAURI__.core.invoke('get', { id: ${JSON.stringify(due)} })).reminded > 0)()`, 30000));
 
   await js(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))`);
   await js(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', ctrlKey: true, bubbles: true, cancelable: true }))`);
   check("Ctrl+N goes to the new-task field", await until(`document.activeElement.id === 'add-title'`));
 
-  await o.call("prefs.set", { key: "locale", value: "tr" });
+  setPref("locale", "tr");
   check("a language change reaches Tasks, including built text", await until(`document.querySelector('[data-view="today"]').textContent === 'Bugün' && document.getElementById('status').textContent.endsWith('görev')`));
   await shot("04-turkish");
 
@@ -176,11 +157,9 @@ try {
   failures++;
   console.error(`  FAIL  ${error.stack || error}`);
 } finally {
-  try { await o?.call("core.shutdown"); } catch { /* gone */ }
-  o?.close();
   cdp?.close();
+  try { app?.kill(); } catch { /* gone */ }
   await sleep(1500);
-  try { core.kill(); } catch { /* gone */ }
   try { rmSync(home, { recursive: true, force: true }); } catch { /* in use */ }
 }
 console.log(failures ? `\n${failures} check(s) failed.` : "\nall checks passed");

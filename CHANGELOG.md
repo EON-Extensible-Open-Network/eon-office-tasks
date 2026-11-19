@@ -5,6 +5,20 @@ SPDX-FileCopyrightText: 2026 EON contributors
 
 # Changelog
 
+## 0.2.0 — stands alone
+
+- **No core service, no launcher needed.** Tasks links the `eon-office-core` library and
+  opens its own store in the EON Office home folder (plan madde 43;
+  `eon-docs/office/design/2026-11-19-library-core.md`).
+- **Reminders** go to the operating system's notification centre, checked every 20
+  seconds while Tasks is open and at start: one that fell due while it was closed is shown
+  once when it next opens. A moved reminder fires again at its new time.
+- **One window:** a second start, or an `eon-office://org.eon.office.tasks/<id>` link, goes
+  to the running window. Replaces the `open`, `focus` and `task.create` methods and the
+  `task.completed` event; completing a task adds it to the recent list instead.
+- Tests no longer need a running core; the window check starts Tasks on its own, hands it
+  a link from a second start, and watches a due reminder fire.
+
 ## 0.1.0 — first version
 
 - Tasks and subtasks in lists; Today, Next 7 days, All, Done; a three-column board.
