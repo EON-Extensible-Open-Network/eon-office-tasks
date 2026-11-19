@@ -1,0 +1,9 @@
+version = 1
+SPDX-PackageName = "eon-office-tasks"
+SPDX-PackageSupplier = "EON contributors <hello@eonstream.org>"
+SPDX-PackageDownloadLocation = "https://github.com/EON-Extensible-Open-Network/eon-office-tasks"
+
+[[annotations]]
+path = ["**"]
+SPDX-FileCopyrightText = "2026 EON contributors"
+SPDX-License-Identifier = "GPL-3.0-or-later"

@@ -1,0 +1,12 @@
+EON Tasks
+Copyright (c) 2026 EON contributors
+
+This product is licensed under GPL-3.0-or-later WITH the EON Module ABI
+Exception 1.0 (see LICENSE and LICENSE-EXCEPTION.md).
+
+Third-party components (direct dependencies; full inventory: cargo deny check licenses)
+
+  tauri / tauri-build      MIT OR Apache-2.0
+  eon-office-sdk           MIT
+  serde_json               MIT OR Apache-2.0
+  The system webview (WebView2, WebKitGTK, WKWebView) is the platform's and is not shipped.

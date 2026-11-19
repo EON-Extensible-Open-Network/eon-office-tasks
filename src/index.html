@@ -1,0 +1,108 @@
+<!doctype html>
+<!--
+SPDX-License-Identifier: GPL-3.0-or-later
+SPDX-FileCopyrightText: 2026 EON contributors
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EON Tasks</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div id="banner" class="banner" role="alert" hidden>
+    <p id="banner-text"></p>
+    <button id="retry" data-i18n="retry">Try again</button>
+  </div>
+
+  <div class="layout" id="layout" hidden>
+    <nav class="sidebar" data-i18n-label="views.label" aria-label="Views">
+      <ul id="views" class="views">
+        <li><button data-view="today" data-i18n="view.today">Today</button></li>
+        <li><button data-view="upcoming" data-i18n="view.upcoming">Next 7 days</button></li>
+        <li><button data-view="all" data-i18n="view.all">All tasks</button></li>
+        <li><button data-view="done" data-i18n="view.done">Done</button></li>
+      </ul>
+      <h2 data-i18n="lists.label">Lists</h2>
+      <ul id="lists" class="views"></ul>
+      <details>
+        <summary data-i18n="export">Export iCalendar</summary>
+        <form id="export-form">
+          <label for="export-path" data-i18n="export.label">Save to</label>
+          <input id="export-path" type="text" spellcheck="false" data-i18n-placeholder="export.placeholder">
+          <button type="submit" data-i18n="export">Export iCalendar</button>
+        </form>
+        <form id="import-form">
+          <label for="import-path" data-i18n="import.label">Import</label>
+          <input id="import-path" type="text" spellcheck="false" data-i18n-placeholder="import.placeholder">
+          <button type="submit" data-i18n="import.go">Import</button>
+        </form>
+      </details>
+    </nav>
+
+    <main id="main" tabindex="-1">
+      <div class="head">
+        <h1 id="view-title"></h1>
+        <div role="tablist" data-i18n-label="mode.label" aria-label="Show as">
+          <button role="tab" id="mode-list" aria-selected="true" data-i18n="listview">List</button>
+          <button role="tab" id="mode-board" aria-selected="false" tabindex="-1" data-i18n="board">Board</button>
+        </div>
+      </div>
+      <form id="add-form" class="add">
+        <label for="add-title" class="sr-only" data-i18n="add.label">New task</label>
+        <input id="add-title" type="text" autocomplete="off" data-i18n-placeholder="add.placeholder">
+        <label for="add-list" class="sr-only" data-i18n="add.list">List</label>
+        <input id="add-list" type="text" autocomplete="off" list="list-names" data-i18n-placeholder="add.list">
+        <datalist id="list-names"></datalist>
+      </form>
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+      <ul id="task-list" class="tasks"></ul>
+      <div id="board" class="board" hidden></div>
+    </main>
+
+    <aside id="detail" hidden data-i18n-label="open.detail" aria-label="Details">
+      <form id="detail-form">
+        <label for="d-title" data-i18n="add.label">Task</label>
+        <input id="d-title" type="text" autocomplete="off">
+        <label for="d-due" data-i18n="due">Due</label>
+        <input id="d-due" type="date">
+        <label for="d-repeat" data-i18n="repeats">Repeats</label>
+        <select id="d-repeat">
+          <option value="" data-i18n="repeat.none">Does not repeat</option>
+          <option value="FREQ=DAILY" data-i18n="repeat.daily">Every day</option>
+          <option value="FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR" data-i18n="repeat.weekdays">Every weekday</option>
+          <option value="FREQ=WEEKLY" data-i18n="repeat.weekly">Every week</option>
+          <option value="FREQ=MONTHLY" data-i18n="repeat.monthly">Every month</option>
+          <option value="FREQ=YEARLY" data-i18n="repeat.yearly">Every year</option>
+        </select>
+        <label for="d-remind" data-i18n="remind">Remind me at</label>
+        <input id="d-remind" type="time">
+        <label for="d-list" data-i18n="list">List</label>
+        <input id="d-list" type="text" autocomplete="off" list="list-names">
+        <label for="d-notes" data-i18n="notes">Notes</label>
+        <textarea id="d-notes" rows="5"></textarea>
+        <div class="actions">
+          <button type="submit" data-i18n="save">Save</button>
+          <button type="button" id="d-delete" class="danger" data-i18n="delete">Delete</button>
+          <button type="button" id="d-close" class="secondary" data-i18n="close">Close</button>
+        </div>
+        <div id="d-confirm" hidden>
+          <p id="d-question"></p>
+          <button type="button" id="d-yes" class="danger" data-i18n="delete">Delete</button>
+          <button type="button" id="d-no" class="secondary" data-i18n="cancel">Cancel</button>
+        </div>
+      </form>
+      <h2 data-i18n="subtasks">Subtasks</h2>
+      <ul id="subtasks" class="tasks"></ul>
+      <form id="sub-form">
+        <label for="sub-title" class="sr-only" data-i18n="subtask.add">Add a subtask</label>
+        <input id="sub-title" type="text" autocomplete="off" data-i18n-placeholder="subtask.add">
+      </form>
+    </aside>
+  </div>
+
+  <div id="announcer" class="sr-only" aria-live="assertive"></div>
+  <script src="app.js"></script>
+</body>
+</html>

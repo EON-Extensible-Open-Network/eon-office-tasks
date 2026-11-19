@@ -1,0 +1,17 @@
+{
+  "manifest": 0,
+  "id": "org.eon.office.tasks",
+  "name": "EON Tasks",
+  "version": "0.1.0",
+  "api": { "min": 0, "max": 0 },
+  "description": "Tasks, subtasks and repeating tasks in lists and on a board, with reminders and iCalendar import and export. Offers other applications a way to create or open a task.",
+  "entry": { "command": "eon-tasks" },
+  "capabilities": ["storage", "search.index", "search.query", "notifications", "schedule", "events.publish"],
+  "provides": [
+    { "method": "open", "description": "Show a task by id." },
+    { "method": "focus", "description": "Bring the Tasks window to the front." },
+    { "method": "task.create", "description": "Create a task from `title`, optional `due` (YYYY-MM-DD), `list` and `notes`; returns its `id`." }
+  ],
+  "publishes": ["activity", "task.completed"],
+  "restart": "never"
+}
