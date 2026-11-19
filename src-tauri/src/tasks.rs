@@ -24,6 +24,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 pub const COLLECTION: &str = "tasks";
+/// When each task's reminder was last shown, keyed by task id.
+pub const REMINDERS: &str = "reminders";
 pub type Outcome = Result<Value, Value>;
 
 fn fail(code: &str, message: impl Into<String>) -> Value {
@@ -217,10 +219,24 @@ impl Tasks {
         Ok(json!({ "id": id, "rev": written["rev"] }))
     }
 
+    /// When a task's reminder was last shown, from the `reminders` collection.
+    /// 0.2.0 kept it in the task itself as `reminded`; that is still read.
+    fn reminded(&self, task: &Value) -> Option<u64> {
+        let id = task["id"].as_str()?;
+        let mark = self.ctx().get(REMINDERS, id).ok()?;
+        mark["doc"]["at"]
+            .as_u64()
+            .or_else(|| task["reminded"].as_u64())
+    }
+
     /// Reminders that fell due by `now` and have not been shown: each is
     /// marked shown before it is returned, so it fires once -- also when Tasks
     /// was closed at the time and catches up at its next start. A reminder
     /// moved to a new time fires again at that time.
+    ///
+    /// The mark lives beside the task, not in it: firing a reminder is not an
+    /// edit, and must not move the revision a detail panel open on the task
+    /// is holding -- its next save would be refused as a conflict.
     pub fn due_reminders(&self, now: u64) -> Vec<Value> {
         let Ok(all) = self.all() else {
             return Vec::new();
@@ -230,19 +246,12 @@ impl Tasks {
             let Some(at) = task["remind_at"].as_u64() else {
                 continue;
             };
-            if at > now || task["status"] == "done" || task["reminded"].as_u64() == Some(at) {
+            if at > now || task["status"] == "done" || self.reminded(&task) == Some(at) {
                 continue;
             }
             let id = task["id"].as_str().unwrap_or_default().to_owned();
-            let rev = task["rev"].as_u64().unwrap_or(0);
-            let mut marked = task.clone();
-            marked["reminded"] = json!(at);
-            if let Some(o) = marked.as_object_mut() {
-                o.remove("id");
-                o.remove("rev");
-            }
-            // Edited in the window at this very moment: the next tick tries again.
-            if core(self.ctx().put(COLLECTION, &id, &marked, Some(rev))).is_err() {
+            // Not marked, not shown: the next tick tries again.
+            if core(self.ctx().put(REMINDERS, &id, &json!({ "at": at }), None)).is_err() {
                 continue;
             }
             let body = task["due"]
@@ -374,6 +383,7 @@ impl Tasks {
             let tid = task["id"].as_str().unwrap_or_default().to_owned();
             if tid == id || task["parent"] == id {
                 let _ = self.ctx().delete(COLLECTION, &tid, None);
+                let _ = self.ctx().delete(REMINDERS, &tid, None);
                 let _ = self.ctx().unindex(&tid);
                 removed.push(tid);
             }

@@ -183,6 +183,11 @@ fn reminders_fall_due_once_and_missed_ones_fire_once_at_start() {
         .complete(finished["id"].as_str().unwrap(), rev, "2026-11-19")
         .unwrap();
 
+    // The detail panel is open on the task, holding its revision.
+    let held = tasks.get(due["id"].as_str().unwrap()).unwrap()["rev"]
+        .as_u64()
+        .unwrap();
+
     // The window's timer asks what fell due: one notification, the open task's.
     let fired = tasks.due_reminders(now);
     assert_eq!(fired.len(), 1, "{fired:?}");
@@ -191,6 +196,14 @@ fn reminders_fall_due_once_and_missed_ones_fire_once_at_start() {
         (due["id"].clone(), json!("Call Ayşe"))
     );
     assert_eq!(fired[0]["body"], "Due 2026-11-19");
+    // Firing is not an edit: the open panel's save still goes through.
+    tasks
+        .update(
+            due["id"].as_str().unwrap(),
+            &json!({ "notes": "typed while the reminder fired" }),
+            held,
+        )
+        .unwrap();
     // Asked again, nothing: a reminder fires once.
     assert!(tasks.due_reminders(now + 1000).is_empty());
     // Closed and started again (a missed reminder is caught up at start): still once.
